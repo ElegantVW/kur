@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Voice daemon entry — opaque backend until hatch cascade renames."""
+import runpy, sys
+from pathlib import Path
+for c in (
+    Path.home() / "bin" / "vendor" / "smoltide-d",
+    Path.home() / "faeos" / "bin" / "vendor" / "smoltide-d",
+):
+    if c.is_file():
+        sys.path.insert(0, str(c.parent))
+        sys.argv[0] = str(c)
+        runpy.run_path(str(c), run_name="__main__")
+        raise SystemExit(0)
+print("kur-server: backend missing", file=sys.stderr)
+raise SystemExit(127)

@@ -1,0 +1,11 @@
+[Unit]
+Description=Kur Voice & LLM Companion Server
+After=network.target
+
+[Service]
+ExecStart=%h/bin/kur-server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
