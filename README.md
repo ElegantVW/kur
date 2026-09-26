@@ -1,6 +1,6 @@
 ![Kur hero](assets/hero/kur.svg)
 
-# Kur — haiku dragon, hatched
+# Kur — haiku dragon, hatched 🐉
 
 Small local haiku/voice familiar. Answers only in three lines. Local mind
 via menagerie, voice of his own where piper + model exist.
