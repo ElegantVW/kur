@@ -5,6 +5,8 @@
 Small local haiku/voice familiar. Answers only in three lines. Local mind
 via menagerie, voice of his own where piper + model exist.
 
+For: haiku clips and fun, text-only here. Not for: assistant tasks, voice where piper/model missing.
+
 ## Wake
 
 ```bash
