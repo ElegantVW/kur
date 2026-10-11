@@ -1,5 +1,10 @@
 # Kur changelog
 
+## v0.9.0 (2026-10-11)
+
+- Numbered hatch. Local haiku/voice familiar.
+
+
 ## v0.1-hatched (2026-09-26)
 
 - Public extraction from faeOS. Voice daemon :8083 + menagerie mind :8081,
