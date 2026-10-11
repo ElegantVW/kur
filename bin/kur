@@ -3,12 +3,17 @@
 
 After the hermetic leaf is decoded, this is the true name.
 First successful speech hatches the egg (Scroll rewrites its last leaf).
+
+No arguments opens the TUI. One argument speaks once and exits.
+The TUI speaks through the same door as the CLI — no solve paths ship here.
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -18,60 +23,227 @@ import re as _re  # think-trace filter
 import fae_termart as art  # noqa: E402
 import fae_egg  # noqa: E402
 
-# Prefer true name server; fall back to opaque pre-hatch binary layout.
+VOICE_MODEL = os.environ.get(
+    "KUR_VOICE_MODEL",
+    str(Path.home() / ".config" / "siren" / "voices" / "en_US-danny-low.onnx"),
+)
+
+
 def _voice_url() -> str:
     return os.environ.get("KUR_URL", "http://127.0.0.1:8083").rstrip("/") + "/generate"
 
 
-if len(sys.argv) < 2:
-    print('Usage: kur "your observation"')
-    raise SystemExit(1)
+def strip_think(text: str) -> str:
+    """Drop model think-traces; the dragon answers in three lines, not thought."""
+    out = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
+    return _re.sub(r"<think>.*$", "", out, flags=_re.DOTALL).strip()
 
-prompt_text = sys.argv[1]
-data = json.dumps({"prompt": prompt_text}).encode("utf-8")
-req = urllib.request.Request(
-    _voice_url(),
-    data=data,
-    headers={"Content-Type": "application/json"},
-    method="POST",
+
+ASLEEP_MSG = (
+    "The quiet pen is asleep on 8083.\n"
+    "Wake the pen:  systemctl --user start kur-server\n"
+    "(menagerie ensure kur wakes his model on 8081)\n"
+    "Then speak again."
 )
 
-busy_file = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / f"kur-busy.{os.getpid()}"
-try:
-    try:
-        busy_file.write_text(str(os.getpid()), encoding="utf-8")
-    except OSError:
-        pass
 
-    with urllib.request.urlopen(req, timeout=30) as response:
-        res = json.loads(response.read().decode("utf-8"))
-        reply_text = (res.get("text") or "").strip()
-        reply_text = _re.sub(r"<think>.*?</think>", "", reply_text, flags=_re.DOTALL).strip()
-        reply_text = _re.sub(r"<think>.*$", "", reply_text, flags=_re.DOTALL).strip()
-        lines = reply_text.splitlines()
-        max_len = max((len(l) for l in lines), default=20)
-        box_width = max(30, min(max_len + 6, art.term_width()))
-        print()
-        print(art.box(reply_text, title="Kur", width=box_width))
-        print()
-        # Successful speech → hatch (idempotent)
-        if fae_egg.try_hatch_from_kur_success():
-            print(art.paint(
-                "  (the sealed leaf unfolds — Scroll now names the dragon)",
-                art.P.MUTED,
-            ))
-            print()
-except Exception:
-    print(
-        "The quiet pen is asleep on 8083.\n"
-        "Wake the pen:  systemctl --user start kur-server\n"
-        "(menagerie ensure kur wakes his model on 8081)\n"
-        "Then speak again.",
-        file=sys.stderr,
+class MindAsleep(Exception):
+    """The pen did not answer. Message tells the keeper what to wake."""
+
+
+def speak_once(prompt: str, timeout: int = 30) -> tuple[str, bool]:
+    """One exchange through the pen. Returns (three lines, hatched).
+
+    Raises MindAsleep when nothing answers. Hatching runs on every
+    success, same as the CLI has always done — idempotent.
+    """
+    data = json.dumps({"prompt": prompt}).encode("utf-8")
+    req = urllib.request.Request(
+        _voice_url(),
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
-    raise SystemExit(1)
-finally:
+    busy_file = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / f"kur-busy.{os.getpid()}"
     try:
-        busy_file.unlink()
+        try:
+            busy_file.write_text(str(os.getpid()), encoding="utf-8")
+        except OSError:
+            pass
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                res = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            raise MindAsleep(ASLEEP_MSG)
+        reply_text = strip_think((res.get("text") or "").strip())
+        hatched = fae_egg.try_hatch_from_kur_success()
+        return reply_text, hatched
+    finally:
+        try:
+            busy_file.unlink()
+        except Exception:
+            pass
+
+
+def voice_available() -> bool:
+    return shutil.which("piper") is not None and os.path.isfile(VOICE_MODEL)
+
+
+def _speak_aloud(text: str) -> None:
+    try:
+        sys.path.insert(0, str(Path.home() / "bin"))
+        import kur_voice
+
+        kur_voice.KurVoice().speak(text)
     except Exception:
         pass
+
+
+USAGE = 'Usage: kur "your observation"  (no arguments opens the TUI)'
+
+
+def run_tui() -> int:
+    fd = art.tui_open_tty()
+    if fd is None:
+        print("kur: the TUI needs a real terminal", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
+        return 1
+    art.tui_begin(fd, "kur", mouse=True)
+    log: list[tuple[str, str]] = []  # (who, text); who in {"you", "glass", "sys"}
+    buf = ""
+    log_off = 0
+    voice_on = False
+    pen = "unknown"
+    turns = 0
+    status = ""
+    try:
+        while True:
+            frame = render_tui(log, buf, log_off, pen, voice_on, turns, status)
+            try:
+                art.paint_frame(fd, frame)
+            except OSError:
+                art.tty_write(fd, art.clear_screen() + frame + "\n")
+            ev = art.tui_read_event(fd, timeout=0.5)
+            if isinstance(ev, art.MouseEvent):
+                d = art.wheel_delta(ev)
+                if d:
+                    log_off = max(0, log_off - d * 3)
+                continue
+            key = ev.text if isinstance(ev, art.PasteEvent) else ev
+            if isinstance(ev, art.PasteEvent):
+                buf += key
+                continue
+            if key in ("q", "ctrl-c") and not buf:
+                return 0
+            if key == "esc":
+                buf = ""
+            elif key == "backspace":
+                buf = buf[:-1]
+            elif key == "v" and not buf:
+                if voice_available():
+                    voice_on = not voice_on
+                    status = "voice on" if voice_on else "voice off"
+                else:
+                    status = "voice unavailable (piper/model)"
+            elif len(key) == 1 and not key.startswith("ctrl-"):
+                if key == "q":
+                    return 0
+                buf += key
+            elif key == "space":
+                buf += " "
+            elif key in ("pgup",):
+                log_off += 5
+            elif key in ("pgdn",):
+                log_off = max(0, log_off - 5)
+            elif key == "enter":
+                if not buf.strip():
+                    continue
+                prompt = buf
+                buf = ""
+                log.append(("you", prompt))
+                log_off = 0
+                try:
+                    reply, hatched = speak_once(prompt)
+                except MindAsleep as e:
+                    pen = "asleep"
+                    log.append(("sys", str(e).splitlines()[0]))
+                    continue
+                pen = "awake"
+                turns += 1
+                log.append(("glass", reply))
+                if voice_on:
+                    threading.Thread(target=_speak_aloud, args=(reply,), daemon=True).start()
+                if hatched:
+                    log.append(("sys", "the sealed leaf unfolds — Scroll now names the dragon"))
+                status = ""
+    finally:
+        art.tui_cleanup()
+    return 0
+
+
+def render_tui(log, buf, log_off, pen, voice_on, turns, status):
+    """Pure frame builder — the unit-tested half of the TUI."""
+    cols, rows = art.winsize()
+    tw = max(28, cols - 2)
+    th = max(10, rows - 1)
+
+    def _lines(frame):
+        return frame.count("\n") + 1
+    voice = "on" if voice_on else "off"
+    sub = f"kur · pen {pen} · voice {voice}" + (f" · {turns}" if turns else "")
+    if status:
+        sub += f" · {status}"
+    head = art.box([], title="Kur", subtitle=sub, width=tw)
+    head_h = _lines(head)
+    runes = art.box(
+        ["type · enter send · v voice · pgup/pgdn scroll · esc clear · q quit"],
+        title="Runes",
+        width=tw,
+    )
+    prompt = art.box(["> " + buf + "█"], title="speak", width=tw)
+    prompt_h = _lines(prompt)
+    avail = th - _lines(runes) - head_h - prompt_h - 2
+    avail = max(3, avail)
+    rows = []
+    for who, text in log:
+        mark = "▸ " if who == "you" else ("✦ " if who == "glass" else "· ")
+        for ln in str(text).splitlines() or [""]:
+            rows.append(mark + ln)
+    if log_off > 0:
+        rows = rows[: max(0, len(rows) - log_off)] or rows
+    else:
+        rows = rows[-avail:] if len(rows) > avail else rows
+    while len(rows) < avail:
+        rows.append("")
+    body = art.box(rows, title="pond", width=tw)
+    return f"{head}\n{body}\n{prompt}\n{runes}"
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        return run_tui()
+    if argv[0] in ("-h", "--help"):
+        print(USAGE)
+        return 0
+    try:
+        reply_text, hatched = speak_once(argv[0])
+    except MindAsleep as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    lines = reply_text.splitlines()
+    max_len = max((len(li) for li in lines), default=20)
+    box_width = max(30, min(max_len + 6, art.term_width()))
+    print()
+    print(art.box(reply_text, title="Kur", width=box_width))
+    print()
+    if hatched:
+        print(art.paint(
+            "  (the sealed leaf unfolds — Scroll now names the dragon)",
+            art.P.MUTED,
+        ))
+        print()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

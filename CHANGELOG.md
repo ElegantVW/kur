@@ -1,5 +1,9 @@
 # Kur changelog
 
+## Unreleased — pond TUI
+
+- `kur` with no arguments opens a conversation TUI (same POST + think-strip + hatch as the CLI). Voice toggle, wheel scroll, 7 tests.
+
 ## v0.9.0 (2026-10-11)
 
 - Numbered hatch. Local haiku/voice familiar.

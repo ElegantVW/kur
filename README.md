@@ -17,6 +17,15 @@ menagerie ensure kur                        # his model on :8081
 kur "autumn rain on the terminal"
 ```
 
+## TUI
+
+`kur` with no arguments opens the pond: a conversation view with the
+same door as the CLI (same POST, same think-strip, same hatch — no
+bypass). Type, `enter` sends, `v` toggles spoken voice (needs
+piper + model, otherwise it says so), `pgup/pgdn`/wheel scroll,
+`esc` clears, `q` quits. Mouse wheel scrolls; clicks do nothing
+(the pond has one mouth).
+
 First true-name speech hatches the egg (`faeOS` Scroll flips its sealed
 leaf to his page). The quest stays a quest — no solve paths ship here.
 
