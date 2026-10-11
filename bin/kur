@@ -116,14 +116,54 @@ def run_tui() -> int:
     pen = "unknown"
     turns = 0
     status = ""
+    pending = None  # dict(prompt=, gen=) while the pen thinks
+    pending_out = []  # finished (gen, ok, reply, hatched, error)
+    gen = 0
+    spin = ["◌", "◍", "◎", "●"]
+    import time as _time
+
+    def _ask(prompt, g):
+        try:
+            reply, hatched = speak_once(prompt)
+            pending_out.append((g, True, reply, hatched, ""))
+        except MindAsleep as e:
+            pending_out.append((g, False, "", False, str(e).splitlines()[0]))
+
     try:
         while True:
+            if pending is not None:
+                for g, ok, reply, hatched, err in [
+                    r for r in pending_out if r[0] == pending["gen"]
+                ]:
+                    pending_out.clear()
+                    pending = None
+                    if ok:
+                        pen = "awake"
+                        turns += 1
+                        log.append(("glass", reply))
+                        if voice_on:
+                            threading.Thread(
+                                target=_speak_aloud, args=(reply,), daemon=True
+                            ).start()
+                        if hatched:
+                            log.append((
+                                "sys",
+                                "the sealed leaf unfolds — Scroll now names the dragon",
+                            ))
+                    else:
+                        pen = "asleep"
+                        log.append(("sys", err))
+                    status = ""
+                    break
+                else:
+                    frame_i = int(_time.time() * 4) % len(spin)
+                    status = f"listening {spin[frame_i]}"
             frame = render_tui(log, buf, log_off, pen, voice_on, turns, status)
             try:
                 art.paint_frame(fd, frame)
             except OSError:
                 art.tty_write(fd, art.clear_screen() + frame + "\n")
-            ev = art.tui_read_event(fd, timeout=0.5)
+            ev = art.tui_read_event(fd, timeout=0.25)
             if isinstance(ev, art.MouseEvent):
                 d = art.wheel_delta(ev)
                 if d:
@@ -156,26 +196,20 @@ def run_tui() -> int:
             elif key in ("pgdn",):
                 log_off = max(0, log_off - 5)
             elif key == "enter":
-                if not buf.strip():
+                if pending is not None:
+                    status = "one ripple at a time"
+                elif not buf.strip():
                     continue
-                prompt = buf
-                buf = ""
-                log.append(("you", prompt))
-                log_off = 0
-                try:
-                    reply, hatched = speak_once(prompt)
-                except MindAsleep as e:
-                    pen = "asleep"
-                    log.append(("sys", str(e).splitlines()[0]))
-                    continue
-                pen = "awake"
-                turns += 1
-                log.append(("glass", reply))
-                if voice_on:
-                    threading.Thread(target=_speak_aloud, args=(reply,), daemon=True).start()
-                if hatched:
-                    log.append(("sys", "the sealed leaf unfolds — Scroll now names the dragon"))
-                status = ""
+                else:
+                    prompt = buf
+                    buf = ""
+                    log.append(("you", prompt))
+                    log_off = 0
+                    gen += 1
+                    pending = {"prompt": prompt, "gen": gen}
+                    threading.Thread(
+                        target=_ask, args=(prompt, gen), daemon=True
+                    ).start()
     finally:
         art.tui_cleanup()
     return 0
